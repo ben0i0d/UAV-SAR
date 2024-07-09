@@ -14,7 +14,6 @@ from collections import OrderedDict
 
 import torch
 import torch.optim as optim
-import intel_extension_for_pytorch as ipex
 import numpy as np
 import yaml
 
@@ -31,13 +30,10 @@ from utils import BalancedSampler as BS
 # resource.setrlimit(resource.RLIMIT_NOFILE, (2048, rlimit[1]))
 
 def init_seed(seed):
-    # torch.manual_seed_all(seed)
-    torch.manual_seed(seed)
-    np.random.seed(seed)
     random.seed(seed)
-    # torch.backends.cudnn.enabled = False
-    torch.backends.cudnn.deterministic = False
-    torch.backends.cudnn.benchmark = True
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 def import_class(import_str):
     mod_str, _sep, class_str = import_str.rpartition('.')
@@ -64,12 +60,10 @@ class Processor():
             pass
         else:
             self.load_optimizer()
+            self.load_gradscaler()
             self.load_data()
         self.best_acc = 0
         self.best_acc_epoch = 0
-
-        model = self.model.to('xpu')
-        self.model, self.optimizer = ipex.optimize(model, optimizer=self.optimizer) # dtype=torch.bfloat16
 
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
@@ -130,11 +124,12 @@ class Processor():
             noise_ratio=self.arg.noise_ratio,
             gain=self.arg.z_prior_gain,
             cl_mode=self.arg.cl_mode
-        )
+        ).to(self.arg.device)
+
         if self.arg.focal_loss:
-            self.loss = MultiClassFocalLossWithAlpha(num_class=self.arg.num_class).to('xpu')
+            self.loss = MultiClassFocalLossWithAlpha(num_class=self.arg.num_class).to(self.arg.device)
         else:
-            self.loss = LabelSmoothingCrossEntropy().to('xpu')
+            self.loss = LabelSmoothingCrossEntropy().to(self.arg.device)
 
         if self.arg.weights:
             self.global_step = int(self.arg.weights[:-3].split('-')[-1])
@@ -145,7 +140,7 @@ class Processor():
             else:
                 weights = torch.load(self.arg.weights)
 
-            weights = OrderedDict([[k.split('module.')[-1], v.to('xpu')] for k, v in weights.items()])
+            weights = OrderedDict([[k.split('module.')[-1], v.to(self.arg.device)] for k, v in weights.items()])
 
             keys = list(weights.keys())
             for w in self.arg.ignore_weights:
@@ -184,6 +179,12 @@ class Processor():
             raise ValueError()
 
         self.print_log('using warm up, epoch: {}'.format(self.arg.warm_up_epoch))
+
+    def load_gradscaler(self):
+        if self.arg.half :
+            self.scaler = torch.amp.GradScaler('cuda')
+        else:
+            pass
 
     def save_arg(self):
         # save arg
@@ -248,17 +249,22 @@ class Processor():
 
         for data, y, index in tqdm(self.data_loader['train'], dynamic_ncols=True):
             self.global_step += 1
-            with torch.no_grad():
-                data = data.float().to('xpu')
-                y = y.long().to('xpu')
+            data = data.float().to(self.arg.device)
+            y = y.long().to(self.arg.device)
+            
             timer['dataloader'] += self.split_time()
 
             # forward
             cl_loss = None
             if self.arg.cl_mode is not None:
-                y_hat, z, cl_loss = self.model(data, y, get_cl_loss=True)
+                if self.arg.half:
+                    with torch.amp.autocast('cuda'):
+                        y_hat, z, cl_loss = self.model(data, y, get_cl_loss=True)
             else:
-                y_hat, z = self.model(data)
+                if self.arg.half:
+                    with torch.amp.autocast('cuda'):
+                        y_hat, z = self.model(data)
+
             mmd_loss, l2_z_mean, z_mean = get_mmd_loss(z, self.model.z_prior, y, self.arg.num_class)
             cos_z, dis_z = get_vector_property(z_mean)
             cos_z_prior, dis_z_prior = get_vector_property(self.model.z_prior)
@@ -273,12 +279,17 @@ class Processor():
                 full_loss = loss + self.arg.w_cl_weights * cl_loss.mean()
             else:
                 full_loss = loss
+            
             # backward
             self.optimizer.zero_grad()
-            # with torch.xpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
-            full_loss.backward()
-
-            self.optimizer.step()
+            
+            if self.arg.half:
+                self.scaler.scale(full_loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                full_loss.backward()
+                self.optimizer.step()
 
             loss_value.append(cls_loss.data.item())
             mmd_loss_value.append(mmd_loss.data.item())
@@ -325,8 +336,8 @@ class Processor():
             for data, y, index in tqdm(self.data_loader[ln], dynamic_ncols=True):
                 label_list.append(y)
                 with torch.no_grad():
-                    data = data.float().to('xpu')
-                    y = y.long().to('xpu')
+                    data = data.float().to(self.arg.device)
+                    y = y.long().to(self.arg.device)
                     y_hat, z = self.model(data)
                     if save_z:
                         z_list.append(z.data.cpu().numpy())
@@ -439,8 +450,7 @@ class Processor():
             self.eval(epoch=0, save_score=self.arg.save_score, loader_name=['test'], save_z=True)
             self.print_log('Done.\n')
 
-def main():
-    # parser arguments
+if __name__ == '__main__':
     parser = get_parser()
     arg = parser.parse_args()
     if arg.config is not None:
@@ -458,6 +468,3 @@ def main():
     # execute process
     processor = Processor(arg)
     processor.start()
-
-if __name__ == '__main__':
-    main()

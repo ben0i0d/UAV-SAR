@@ -11,7 +11,7 @@ def str2bool(v):
 def get_parser():
     # parameter priority: command line > config > default
     parser = argparse.ArgumentParser( description='Spatial Temporal Graph Convolution Network')
-    parser.add_argument('--device', type=int, default=0, help='device')
+    parser.add_argument('--device', type=str, default='cuda:0', help='device')
     parser.add_argument('--work-dir', default='./work_dir/temp', help='the work folder for storing results')
     parser.add_argument('--config', default='./config/nturgbd-cross-subject/default.yaml', help='path to the configuration file')
     parser.add_argument('--debug', type=str2bool, default=False, help='Debug mode; default false')
@@ -79,9 +79,8 @@ def get_parser():
     parser.add_argument('--lambda_2', type=float, default=1e-1)
     parser.add_argument('--focal_loss', type=bool, default=False)
 
-    # apex
+    # amp
     parser.add_argument('--half', type=str2bool, default=True, help='Use half-precision (FP16) training')
-    parser.add_argument('--amp_opt_level', type=int, default=1, help='NVIDIA Apex AMP optimization level')
 
     return parser
 

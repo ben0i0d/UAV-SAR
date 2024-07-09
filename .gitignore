@@ -6,3 +6,5 @@ data/uav/raw_data/
 
 data/uav/*.npz
 data/uav/*.npy
+
+runs

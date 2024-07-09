@@ -8,14 +8,9 @@ We have ensembles three models, including infoGCN+FR_Head, Skeleton-MixFormer, a
 All prediction results are saved in the folder `ensemble_results`, just like `epoch1_test_score.pkl`, and you could use our prediction results for validation, or train these models by yourself according to `readme.md`.
 
 ## Dependencies
-* python == 3.8
-* pytorch == 1.1.3
-* NVIDIA apex
-* PyYAML, tqdm, tensorboardX, wandb
-
-Run `pip install -e torchlight`.
-
-You could find more details in the `requirements.txt`, or use the command `pip install -r requirements.txt`.
+* python >= 3.10
+* pytorch >= 2.3.1
+* PyYAML, tqdm, tensorboardX, wandb , matplotlib
 
 ## Data Preparation
 We used the data processing method based on [CTR-GCN](https://github.com/Uason-Chen/CTR-GCN).
